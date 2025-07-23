@@ -1,0 +1,130 @@
+# ==============================================
+# DONATION BOT - GITIGNORE
+# ==============================================
+
+# Environment Variables
+.env
+.env.local
+.env.production
+.env.development
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+donation_bot.db*
+
+# Logs
+*.log
+logs/
+bot.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Testing
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Documentation
+docs/_build/
+
+# Temporary Files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Backup Files
+*.bak
+*.backup
+backup/
+
+# Media Files (if any)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.mp3
+!assets/*.png
+!assets/*.jpg
+
+# Config Files (sensitive)
+config.ini
+settings.cfg
+
+# Certificates
+*.pem
+*.key
+*.crt
+
+# Replit specific
+.replit
+.upm
+.breakpoints
+replit.nix
+
+# Process IDs
+*.pid
+
+# Runtime
+runtime.txt
+
+# Custom
+qr_codes/
+uploads/
+downloads/
