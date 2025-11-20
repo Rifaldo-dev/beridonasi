@@ -1,71 +1,65 @@
-<h1 align="center">Beri Donasi</h1>
+# Beri Donasi
 
-<p align="center">
-  <img src="preview/logo.jpg" alt="Beri Donasi" width="320" height="280">
-</p>
+Bot Telegram untuk sistem donasi dengan pembayaran QRIS. Terinspirasi dari Saweria dan Trakteer.
 
-<p align="center">
-  Sebuah bot Telegram untuk sistem donasi dengan pembayaran QRIS, terinspirasi dari Saweria dan Trakteer. Bot ini menyediakan sistem verifikasi admin yang lengkap dan terorganisir untuk menerima donasi dengan mudah.
-</p>
+[Demo Bot](https://t.me/beridonasibot)
 
----
+## Fitur
 
-### 📸 Preview
+- Donasi QRIS Universal - Semua e-wallet (GoPay, DANA, OVO, LinkAja, dll.)
+- Nominal preset & input custom
+- Verifikasi manual oleh admin
+- Auto post ke channel
+- Statistik donasi real-time
+- Anti-spam & blacklist user
+- 80+ item donasi siap pakai
+- Item custom dan stiker bermerek
 
-Berikut tampilan Beri Donasi:
+## Instalasi
 
-<p align="center">
-  <img src="preview/channel.png" alt="Preview di channel" width="480"><br>
-  <img src="preview/bot.png" alt="Preview di bot" width="480">
-</p>
-
----
-
-### 🚀 Demo
-
-👉 [Klik di sini untuk mulai donasi lewat bot](https://t.me/beridonasibot)
-
----
-
-## ✨ Fitur Utama
-
-### 🎯 Core Features
-- Donasi QRIS Universal — Mendukung semua e-wallet (GoPay, DANA, OVO, LinkAja, dll.)
-- Opsi Donasi Fleksibel — Nominal preset & input custom
-- Personalisasi Donasi — Tambahkan nama & pesan donatur
-- Verifikasi Real-time — Sistem persetujuan manual oleh admin
-- Auto Post ke Channel — Notifikasi langsung ke channel publik
-- Statistik Lengkap — Dashboard untuk monitoring performa
-- Desain QR Premium — Stiker donasi berkualitas tinggi
-- Auto Cleanup — Pesan donasi dibersihkan otomatis
-
-### 🔐 Keamanan & Manajemen
-- Perlindungan Anti-Spam — Rate limit & deteksi duplikat
-- Sistem Blacklist — Manajemen blokir/unblokir user
-- Kontrol Admin Lengkap — Perintah admin yang komprehensif
-- Pemantauan Aktivitas — Lacak donasi secara real-time
-- Konfigurasi Aman — Manajemen rahasia berbasis environment
-
-### 🎨 Kustomisasi
-- Item Dinamis — 80+ item donasi siap pakai
-- Item Kustom — Admin dapat menambahkan sendiri
-- Stiker Bermerek — QR code dengan desain sesuai branding
-- Pengaturan Fleksibel — Konfigurasi bot sesuai kebutuhan
-
----
-
-## 🚀 Quick Start Guide
-
-### 1. 📋 Prasyarat
-
-- Python 3.8 atau lebih tinggi
+### Prasyarat
+- Python 3.8+
 - Telegram Bot Token dari [@BotFather](https://t.me/BotFather)
-- QRIS code dari e-wallet Anda
-- Telegram Channel untuk notifikasi (opsional)
+- QRIS code
+- Telegram Channel (opsional)
 
-### 2. 🔧 Instalasi
+### Setup
 
-```bash
-git clone https://github.com/Rifaldo-dev/beridonasi
-cd beridonasi
-pip install -r requirements.txt
+1. Clone repository
+   ```bash
+   git clone https://github.com/Rifaldo-dev/beridonasi
+   cd beridonasi
+   ```
+
+2. Install dependencies
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Buat file `.env`
+   ```bash
+   cp .env.example .env
+   ```
+
+4. Isi konfigurasi di `.env`:
+   ```env
+   TELEGRAM_BOT_TOKEN=your_bot_token
+   CHANNEL_ID=your_channel_id
+   ADMIN_IDS=123456789,987654321
+   QRIS_CODE=your_qris_code
+   ```
+
+5. Jalankan bot
+   ```bash
+   python main.py
+   ```
+
+## Penggunaan
+
+Akses bot: [Beri Donasi Bot](https://t.me/beridonasibot)
+
+Perintah utama: `/start`, `/donasi`, `/stats`, `/admin`
+
+## Lisensi
+
+MIT License
