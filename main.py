@@ -1,38 +1,45 @@
-
 #!/usr/bin/env python3
-"""
-Donation Bot - aldo soft
-A Telegram bot for donation system with QRIS payment verification
-"""
 
 import telebot
 import signal
 import sys
 import time
-from telebot import types
 import sqlite3
 import qrcode
+import threading
+from telebot import types
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
-import random
-import string
-import threading
 
-# Import modules
 from config import BOT_TOKEN, ADMIN_USER_ID, CHANNEL_ID, NOTIFICATION_CHANNEL, DONATION_ITEMS, AUTO_DELETE_DONATION, DATABASE_NAME
-from database import init_db, load_donation_qris, is_banned, has_pending_donation, ban_user, unban_user, add_custom_donation_item, get_all_donation_items, set_user_state, get_user_state, clear_user_state
-from utils import is_admin, generate_random_id, generate_qris, create_donation_sticker, auto_delete_message, get_random_donation_item
-from handlers.commands import welcome_command, setup_qris_command, start_donation_command, custom_donation_command, stats_command
+from database import (
+    init_db, load_donation_qris, is_banned, has_pending_donation, 
+    ban_user, unban_user, add_custom_donation_item, get_all_donation_items, 
+    set_user_state, get_user_state, clear_user_state
+)
+from utils import (
+    is_admin, generate_random_id, generate_qris, create_donation_sticker, 
+    auto_delete_message, get_random_donation_item
+)
+from handlers.commands import (
+    welcome_command, setup_qris_command, start_donation_command, 
+    custom_donation_command, stats_command
+)
 from handlers.callbacks import handle_donation_confirmation, handle_admin_verification
+from logger_config import get_logger
+from services import UserService, DonationService, QRISService
+from middleware import LoggerMiddleware, ErrorMiddleware
+from exceptions import BanException, PendingDonationException
 
-# Initialize bot
+logger = get_logger(__name__)
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# Global variable for QRIS
 donation_qris_code = None
+user_service = UserService()
+donation_service = DonationService()
+qris_service = QRISService()
 
 def signal_handler(sig, frame):
-    """Handle graceful shutdown"""
+    logger.warning("Bot shutdown signal received")
     print("\n🛑 Shutting down donation bot...")
     bot.stop_polling()
     sys.exit(0)
@@ -40,7 +47,25 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-# Command Handlers
+def _format_amount(amount):
+    return f"Rp {amount:,}".replace(',', '.')
+
+def _create_name_markup(amount):
+    markup = types.InlineKeyboardMarkup()
+    btn_skip = types.InlineKeyboardButton("⏭️ Skip (Anonim)", callback_data=f"skip_name_{amount}")
+    btn_cancel = types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_collection")
+    markup.add(btn_skip)
+    markup.add(btn_cancel)
+    return markup
+
+def _create_message_markup(amount):
+    markup = types.InlineKeyboardMarkup()
+    btn_skip = types.InlineKeyboardButton("⏭️ Skip Pesan", callback_data=f"skip_message_{amount}")
+    btn_cancel = types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_collection")
+    markup.add(btn_skip)
+    markup.add(btn_cancel)
+    return markup
+
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     welcome_command(bot, message)
@@ -60,6 +85,16 @@ def handle_custom_donation(message):
 @bot.message_handler(commands=['stats'])
 def handle_stats(message):
     stats_command(bot, message)
+
+def _add_item_emoji(item_name):
+    item_name_lower = item_name.lower()
+    if any(food in item_name_lower for food in ["bakso", "mie", "nasi", "soto", "gado"]):
+        return "🍜"
+    elif any(drink in item_name_lower for drink in ["kopi", "teh", "jus", "air"]):
+        return "☕"
+    elif any(snack in item_name_lower for snack in ["kerupuk", "chips", "kue", "roti"]):
+        return "🍪"
+    return "🎁"
 
 @bot.message_handler(commands=['add'])
 def handle_add_item(message):
@@ -82,33 +117,16 @@ def handle_add_item(message):
 
         price = int(price_str)
 
-        if price < 1000:
-            bot.reply_to(message, "❌ Harga minimal Rp 1.000")
+        if price < 1000 or price > 1000000:
+            bot.reply_to(message, "❌ Harga harus antara Rp 1.000 - Rp 1.000.000")
             return
 
-        if price > 1000000:
-            bot.reply_to(message, "❌ Harga maksimal Rp 1.000.000")
-            return
-
-        # Add emoji based on item name
-        item_emoji = ""
-        if any(food in item_name for food in ["bakso", "mie", "nasi", "soto", "gado"]):
-            item_emoji = "🍜"
-        elif any(drink in item_name for drink in ["kopi", "teh", "jus", "air"]):
-            item_emoji = "☕"
-        elif any(snack in item_name for snack in ["kerupuk", "chips", "kue", "roti"]):
-            item_emoji = "🍪"
-        else:
-            item_emoji = "🎁"
-
+        item_emoji = _add_item_emoji(item_name)
         item_with_emoji = f"{item_emoji} {item_name}"
-
-        # Save to database
         add_custom_donation_item(item_with_emoji, price, message.from_user.id)
 
-        success_msg = bot.reply_to(message, f"✅ Item donasi berhasil ditambahkan!\n\n🎁 **{item_with_emoji}**\n💰 Rp {price:,}\n\nSekarang item ini bisa muncul saat donasi random!".replace(',', '.'))
+        success_msg = bot.reply_to(message, f"✅ Item donasi berhasil ditambahkan!\n\n🎁 **{item_with_emoji}**\n💰 {_format_amount(price)}\n\nSekarang item ini bisa muncul saat donasi random!", parse_mode='Markdown')
 
-        # Auto-delete after 30 seconds
         auto_delete_message(bot, message.chat.id, success_msg.message_id, 30)
         auto_delete_message(bot, message.chat.id, message.message_id, 30)
 
@@ -118,10 +136,7 @@ def handle_add_item(message):
 @bot.message_handler(commands=['listitem'])
 def handle_list_items(message):
     try:
-        from config import DONATION_ITEMS
-
-        items_text = "🎁 **DAFTAR ITEM DONASI**\n\n"
-        items_text += "📦 **Item Default:**\n"
+        items_text = "🎁 **DAFTAR ITEM DONASI**\n\n📦 **Item Default:**\n"
 
         for category, items in DONATION_ITEMS.items():
             items_text += f"\n🏷️ **{category.title()}:**\n"
@@ -130,7 +145,6 @@ def handle_list_items(message):
             if len(items) > 5:
                 items_text += f"  • ... dan {len(items)-5} lainnya\n"
 
-        # Get custom items
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         cursor.execute('SELECT item_name, price, created_at FROM custom_donation_items ORDER BY created_at DESC')
@@ -140,19 +154,17 @@ def handle_list_items(message):
         if custom_items:
             items_text += "\n🎨 **Item Custom (Admin):**\n"
             for item_name, price, created_at in custom_items[:10]:
-                items_text += f"  • {item_name} - Rp {price:,}\n"
+                items_text += f"  • {item_name} - {_format_amount(price)}\n"
             if len(custom_items) > 10:
                 items_text += f"  • ... dan {len(custom_items)-10} item lainnya\n"
 
-        items_text += f"\n📊 **Total Items:** {sum(len(items) for items in DONATION_ITEMS.values()) + len(custom_items)} item\n"
-        items_text += f"🎲 **System:** Item dipilih secara random saat donasi"
+        total_items = sum(len(items) for items in DONATION_ITEMS.values()) + len(custom_items)
+        items_text += f"\n📊 **Total Items:** {total_items} item\n🎲 **System:** Item dipilih secara random saat donasi"
 
         if is_admin(message.from_user.id):
             items_text += f"\n\n⚙️ **Admin Commands:**\n"
             items_text += f"• `/add <item> <harga>` - Tambah item custom"
             items_text += f"• `/itemlist` - Detail item custom"
-
-        items_text = items_text.replace(',', '.')
 
         list_msg = bot.reply_to(message, items_text, parse_mode='Markdown')
         auto_delete_message(bot, message.chat.id, list_msg.message_id, 120)
@@ -175,14 +187,13 @@ def handle_cancel(message):
             return
 
         donation_id, random_id, amount = active_donation
-
         cursor.execute('UPDATE donations SET status = ? WHERE id = ?', ('cancelled', donation_id))
         conn.commit()
         conn.close()
 
         clear_user_state(message.from_user.id)
 
-        cancel_msg = bot.reply_to(message, f"✅ **Donasi Dibatalkan**\n\n🆔 {random_id}\n💰 Rp {amount:,}\n\nAnda sekarang dapat membuat donasi baru.".replace(',', '.'), parse_mode='Markdown')
+        cancel_msg = bot.reply_to(message, f"✅ **Donasi Dibatalkan**\n\n🆔 {random_id}\n💰 {_format_amount(amount)}\n\nAnda sekarang dapat membuat donasi baru.", parse_mode='Markdown')
         auto_delete_message(bot, message.chat.id, cancel_msg.message_id, 30)
         auto_delete_message(bot, message.chat.id, message.message_id, 30)
 
@@ -192,6 +203,7 @@ def handle_cancel(message):
 @bot.message_handler(commands=['ban'])
 def ban_user_command(message):
     if not is_admin(message.from_user.id):
+        logger.warning(f"Non-admin ban attempt from {message.from_user.id}")
         bot.reply_to(message, "❌ Hanya admin yang dapat melakukan ban.")
         return
 
@@ -204,10 +216,10 @@ def ban_user_command(message):
         user_id = int(args[1])
         reason = " ".join(args[2:]) if len(args) > 2 else "Bermain-main dengan sistem donasi"
 
-        ban_user(user_id, "", reason)
+        user_service.ban_user(user_id, "", reason)
+        logger.warning(f"User {user_id} banned by admin {message.from_user.id}. Reason: {reason}")
         bot.reply_to(message, f"✅ User {user_id} telah di-ban!\nAlasan: {reason}")
 
-        # Notify banned user
         try:
             bot.send_message(user_id, f"🚫 **ANDA TELAH DIBLACKLIST**\n\nAnda tidak dapat menggunakan sistem donasi.\nAlasan: {reason}\n\n⚠️ Jangan bermain-main agar tidak di-blacklist!", parse_mode='Markdown')
         except:
@@ -216,11 +228,13 @@ def ban_user_command(message):
     except ValueError:
         bot.reply_to(message, "❌ User ID harus berupa angka!")
     except Exception as e:
+        logger.error(f"Ban command error: {e}")
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 @bot.message_handler(commands=['unban'])
 def unban_user_command(message):
     if not is_admin(message.from_user.id):
+        logger.warning(f"Non-admin unban attempt from {message.from_user.id}")
         bot.reply_to(message, "❌ Hanya admin yang dapat melakukan unban.")
         return
 
@@ -232,10 +246,10 @@ def unban_user_command(message):
 
         user_id = int(args[1])
 
-        if unban_user(user_id):
+        if user_service.unban_user(user_id):
+            logger.warning(f"User {user_id} unbanned by admin {message.from_user.id}")
             bot.reply_to(message, f"✅ User {user_id} telah di-unban!")
 
-            # Notify unbanned user
             try:
                 bot.send_message(user_id, "✅ **ANDA TELAH DI-UNBAN**\n\nAnda kini dapat menggunakan sistem donasi kembali.\n\n⚠️ Harap gunakan dengan bijak!", parse_mode='Markdown')
             except:
@@ -246,20 +260,18 @@ def unban_user_command(message):
     except ValueError:
         bot.reply_to(message, "❌ User ID harus berupa angka!")
     except Exception as e:
+        logger.error(f"Unban command error: {e}")
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 @bot.message_handler(commands=['itemlist'])
 def list_custom_items(message):
     if not is_admin(message.from_user.id):
+        logger.warning(f"Non-admin item list attempt from {message.from_user.id}")
         bot.reply_to(message, "❌ Hanya admin yang dapat melihat daftar item custom.")
         return
 
     try:
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-        cursor.execute('SELECT item_name, price, created_at, created_by FROM custom_donation_items ORDER BY created_at DESC')
-        custom_items = cursor.fetchall()
-        conn.close()
+        custom_items = user_service.get_custom_items()
 
         if not custom_items:
             bot.reply_to(message, "✅ Belum ada item custom yang ditambahkan.")
@@ -267,27 +279,25 @@ def list_custom_items(message):
 
         items_text = "🎁 **Daftar Item Donasi Custom:**\n\n"
         for item_name, price, created_at, created_by in custom_items:
-            items_text += f"• **{item_name}** - Rp {price:,}\n"
+            items_text += f"• **{item_name}** - {_format_amount(price)}\n"
             items_text += f"  📅 {created_at} | 👤 {created_by}\n\n"
 
-        items_text = items_text.replace(',', '.')
         bot.reply_to(message, items_text, parse_mode='Markdown')
+        logger.info(f"Custom items listed by admin {message.from_user.id}")
 
     except Exception as e:
+        logger.error(f"List items error: {e}")
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 @bot.message_handler(commands=['banlist'])
 def list_banned_users(message):
     if not is_admin(message.from_user.id):
+        logger.warning(f"Non-admin ban list attempt from {message.from_user.id}")
         bot.reply_to(message, "❌ Hanya admin yang dapat melihat daftar ban.")
         return
 
     try:
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-        cursor.execute('SELECT user_id, username, banned_at, reason FROM banned_users ORDER BY banned_at DESC')
-        banned_users = cursor.fetchall()
-        conn.close()
+        banned_users = user_service.get_banned_users()
 
         if not banned_users:
             bot.reply_to(message, "✅ Tidak ada user yang di-ban.")
@@ -301,8 +311,10 @@ def list_banned_users(message):
             ban_text += f"  💬 {reason}\n\n"
 
         bot.reply_to(message, ban_text, parse_mode='Markdown')
+        logger.info(f"Ban list viewed by admin {message.from_user.id}")
 
     except Exception as e:
+        logger.error(f"Ban list error: {e}")
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 @bot.message_handler(commands=['testadmin'])
@@ -324,14 +336,12 @@ Semua sistem berjalan normal! 🤖"""
 
     bot.reply_to(message, test_text, parse_mode='Markdown')
     
-    # Test sending message to admin ID directly
     try:
         bot.send_message(ADMIN_USER_ID, f"🔧 Test message from bot - Your ID: {message.from_user.id}")
         bot.reply_to(message, "✅ Test message sent to admin ID successfully!")
     except Exception as e:
         bot.reply_to(message, f"❌ Failed to send test message: {e}")
 
-# Message handler for QRIS setup
 @bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['state'] == 'setup_qris')
 def collect_qris_code(message):
     try:
@@ -341,13 +351,11 @@ def collect_qris_code(message):
         user_state = get_user_state(message.from_user.id)
         qris_code = message.text.strip()
         
-        # Delete user message
         try:
             bot.delete_message(message.chat.id, message.message_id)
         except:
             pass
         
-        # Validate QRIS format
         if len(qris_code) < 50 or not qris_code.startswith('00020'):
             bot.edit_message_text(
                 "❌ **QRIS tidak valid!**\n\nPastikan QRIS code lengkap dan benar.\n\nSilakan coba lagi...",
@@ -357,7 +365,6 @@ def collect_qris_code(message):
             )
             return
         
-        # Test QRIS generation
         test_qris = generate_qris(qris_code, 1000)
         if not test_qris:
             bot.edit_message_text(
@@ -368,11 +375,9 @@ def collect_qris_code(message):
             )
             return
         
-        # Save QRIS
         from database import save_donation_qris
         save_donation_qris(qris_code)
         
-        # Update global variable
         global donation_qris_code
         donation_qris_code = qris_code
         
@@ -396,14 +401,12 @@ Bot siap digunakan! 🚀"""
             parse_mode='Markdown'
         )
         
-        # Auto delete after 30 seconds
         auto_delete_message(bot, user_state['data']['chat_id'], user_state['data']['message_id'], 30)
-        
+
     except Exception as e:
         bot.reply_to(message, f"❌ Setup error: {str(e)}")
         clear_user_state(message.from_user.id)
 
-# Message Handlers for User States
 @bot.message_handler(func=lambda message: get_user_state(message.from_user.id)['state'] == 'collecting_name')
 def collect_donor_name(message):
     try:
@@ -418,13 +421,8 @@ def collect_donor_name(message):
         except:
             pass
 
-        message_markup = types.InlineKeyboardMarkup()
-        btn_skip_message = types.InlineKeyboardButton("⏭️ Skip Pesan", callback_data=f"skip_message_{user_state['data']['amount']}")
-        btn_cancel = types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_collection")
-        message_markup.add(btn_skip_message)
-        message_markup.add(btn_cancel)
-
-        message_text = f"""💝 **Donasi Rp {user_state['data']['amount']:,}**
+        message_markup = _create_message_markup(user_state['data']['amount'])
+        message_text = f"""💝 **Donasi {_format_amount(user_state['data']['amount'])}**
 👤 **Nama:** {donor_name}
 
 📝 **Langkah 2/2: Masukkan Pesan (Opsional)**
@@ -432,7 +430,7 @@ def collect_donor_name(message):
 Ketik pesan yang ingin ditampilkan.
 Contoh: `Terima kasih atas karya yang luar biasa!`
 
-💡 Atau klik "Skip" jika tidak ingin menambah pesan.""".replace(',', '.')
+💡 Atau klik "Skip" jika tidak ingin menambah pesan."""
 
         bot.edit_message_text(message_text, user_state['data']['chat_id'], user_state['data']['message_id'], parse_mode='Markdown', reply_markup=message_markup)
 
@@ -483,31 +481,23 @@ def collect_custom_amount(message):
 
         amount = int(amount_text)
 
-        if amount < 1000:
-            bot.edit_message_text("❌ **Error!**\n\nMinimal donasi Rp 1.000\n\nSilakan coba lagi...", user_state['data']['chat_id'], user_state['data']['message_id'], parse_mode='Markdown')
-            return
-
-        if amount > 1000000:
-            bot.edit_message_text("❌ **Error!**\n\nMaksimal donasi Rp 1.000.000\n\nSilakan coba lagi...", user_state['data']['chat_id'], user_state['data']['message_id'], parse_mode='Markdown')
+        if amount < 1000 or amount > 1000000:
+            error_msg = "❌ **Error!**\n\nMinimal Rp 1.000 - Maksimal Rp 1.000.000\n\nSilakan coba lagi..."
+            bot.edit_message_text(error_msg, user_state['data']['chat_id'], user_state['data']['message_id'], parse_mode='Markdown')
             return
 
         user_state['data']['amount'] = amount
         set_user_state(message.from_user.id, 'collecting_name', user_state['data'])
 
-        name_markup = types.InlineKeyboardMarkup()
-        btn_skip_name = types.InlineKeyboardButton("⏭️ Skip (Anonim)", callback_data=f"skip_name_{amount}")
-        btn_cancel = types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_collection")
-        name_markup.add(btn_skip_name)
-        name_markup.add(btn_cancel)
-
-        name_text = f"""💝 **Donasi Rp {amount:,}**
+        name_markup = _create_name_markup(amount)
+        name_text = f"""💝 **Donasi {_format_amount(amount)}**
 
 📝 **Langkah 1/2: Masukkan Nama Anda**
 
 Ketik nama yang ingin ditampilkan di donasi.
 Contoh: `John Doe`
 
-💡 Atau klik "Skip" jika ingin anonim.""".replace(',', '.')
+💡 Atau klik "Skip" jika ingin anonim."""
 
         bot.edit_message_text(name_text, user_state['data']['chat_id'], user_state['data']['message_id'], parse_mode='Markdown', reply_markup=name_markup)
 
@@ -515,7 +505,6 @@ Contoh: `John Doe`
         bot.reply_to(message, f"❌ Error: {str(e)}")
         clear_user_state(message.from_user.id)
 
-# Callback Query Handlers
 @bot.callback_query_handler(func=lambda call: call.data.startswith(('donate_', 'custom_donate')))
 def handle_donation_amount(call):
     try:
@@ -554,20 +543,15 @@ Ketik nominal yang diinginkan..."""
 
         set_user_state(call.from_user.id, 'collecting_name', {'amount': amount, 'message_id': call.message.message_id, 'chat_id': call.message.chat.id})
 
-        name_markup = types.InlineKeyboardMarkup()
-        btn_skip_name = types.InlineKeyboardButton("⏭️ Skip (Anonim)", callback_data=f"skip_name_{amount}")
-        btn_cancel = types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_collection")
-        name_markup.add(btn_skip_name)
-        name_markup.add(btn_cancel)
-
-        name_text = f"""💝 **Donasi Rp {amount:,}**
+        name_markup = _create_name_markup(amount)
+        name_text = f"""💝 **Donasi {_format_amount(amount)}**
 
 📝 **Langkah 1/2: Masukkan Nama Anda**
 
 Ketik nama yang ingin ditampilkan di donasi.
 Contoh: `John Doe`
 
-💡 Atau klik "Skip" jika ingin anonim.""".replace(',', '.')
+💡 Atau klik "Skip" jika ingin anonim."""
 
         bot.edit_message_text(name_text, call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=name_markup)
 
@@ -578,7 +562,7 @@ Contoh: `John Doe`
 def handle_confirm(call):
     handle_donation_confirmation(bot, call, donation_qris_code)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('cancel_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('cancel_') and not call.data.startswith('cancel_collection'))
 def handle_cancel_callback(call):
     try:
         donation_id = int(call.data.split('_')[1])
@@ -598,7 +582,7 @@ def handle_cancel_callback(call):
     except Exception as e:
         bot.answer_callback_query(call.id, f"❌ Error: {str(e)}")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith(('admin_approve_', 'admin_reject_', 'admin_ban_', 'admin_unban_')))
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('admin_approve_', 'admin_reject_', 'admin_ban_')))
 def handle_admin_callback(call):
     handle_admin_verification(bot, call)
 
@@ -613,13 +597,8 @@ def handle_skip_name_callback(call):
 
         bot.answer_callback_query(call.id, "⏭️ Lanjut ke pesan...")
 
-        message_markup = types.InlineKeyboardMarkup()
-        btn_skip_message = types.InlineKeyboardButton("⏭️ Skip Pesan", callback_data=f"skip_message_{amount}")
-        btn_cancel = types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_collection")
-        message_markup.add(btn_skip_message)
-        message_markup.add(btn_cancel)
-
-        message_text = f"""💝 **Donasi Rp {amount:,}**
+        message_markup = _create_message_markup(amount)
+        message_text = f"""💝 **Donasi {_format_amount(amount)}**
 👤 **Nama:** Anonim
 
 📝 **Langkah 2/2: Masukkan Pesan (Opsional)**
@@ -627,7 +606,7 @@ def handle_skip_name_callback(call):
 Ketik pesan yang ingin ditampilkan.
 Contoh: `Terima kasih atas karya yang luar biasa!`
 
-💡 Atau klik "Skip" jika tidak ingin menambah pesan.""".replace(',', '.')
+💡 Atau klik "Skip" jika tidak ingin menambah pesan."""
 
         bot.edit_message_text(message_text, call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=message_markup)
 
@@ -660,13 +639,10 @@ def handle_skip_message_callback(call):
 def handle_cancel_collection_callback(call):
     try:
         bot.answer_callback_query(call.id, "❌ Dibatalkan")
-        
-        # Clear user state safely
         clear_user_state(call.from_user.id)
         
-        # Send cancellation confirmation
         cancel_text = """❌ **DONASI DIBATALKAN**
-        
+
 ✅ Proses donasi telah dibatalkan.
 💡 Anda dapat memulai donasi baru kapan saja.
 
@@ -679,13 +655,9 @@ Gunakan `/donasi` untuk memulai donasi baru."""
                 call.message.message_id,
                 parse_mode='Markdown'
             )
-            
-            # Auto delete after 30 seconds
             auto_delete_message(bot, call.message.chat.id, call.message.message_id, 30)
-            
         except Exception as edit_error:
             print(f"Failed to edit cancel message: {edit_error}")
-            # Fallback: delete and send new message
             try:
                 bot.delete_message(call.message.chat.id, call.message.message_id)
                 cancel_msg = bot.send_message(call.message.chat.id, cancel_text, parse_mode='Markdown')
@@ -723,12 +695,10 @@ def handle_admin_stats_callback(call):
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(call.id, "❌ Akses ditolak!")
         return
-
     bot.answer_callback_query(call.id, "📊 Loading stats...")
     stats_command(bot, call.message)
 
 def create_donation_with_details(chat_id, message_id, user, amount, donor_name="", donor_message=""):
-    """Create donation with all details"""
     try:
         global donation_qris_code
         if not donation_qris_code:
@@ -738,7 +708,6 @@ def create_donation_with_details(chat_id, message_id, user, amount, donor_name="
             bot.edit_message_text("❌ Sistem donasi belum di-setup.", chat_id, message_id)
             return
 
-        # Generate QRIS donasi
         qris_data = generate_qris(donation_qris_code, amount)
 
         if not qris_data or 'QR' not in qris_data:
@@ -746,12 +715,9 @@ def create_donation_with_details(chat_id, message_id, user, amount, donor_name="
             return
 
         qr_code = qris_data['QR']
-
-        # Generate random ID dan pilih item donasi random
         random_id = generate_random_id()
         donation_item = get_random_donation_item()
 
-        # Simpan ke database
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         cursor.execute('''
@@ -762,10 +728,8 @@ def create_donation_with_details(chat_id, message_id, user, amount, donor_name="
         conn.commit()
         conn.close()
 
-        # Buat sticker donasi
         sticker_img = create_donation_sticker(qr_code, amount, donor_name, donor_message)
 
-        # Create button
         markup = types.InlineKeyboardMarkup()
         btn_confirm = types.InlineKeyboardButton(f"✅ Sudah Bayar", callback_data=f"confirm_{donation_id}")
         btn_cancel = types.InlineKeyboardButton(f"❌ Cancel", callback_data=f"cancel_{donation_id}")
@@ -774,7 +738,7 @@ def create_donation_with_details(chat_id, message_id, user, amount, donor_name="
         display_name = donor_name if donor_name else (user.first_name or "Seseorang")
         caption = f"""**DONASI - aldo soft**
 
-{display_name} memberi {donation_item} dengan nominal Rp {amount:,}  
+{display_name} memberi {donation_item} dengan nominal {_format_amount(amount)}
 🆔 {random_id}"""
 
         if donor_message:
@@ -787,7 +751,7 @@ def create_donation_with_details(chat_id, message_id, user, amount, donor_name="
 2. Selesaikan pembayaran
 3. Klik tombol "Sudah Bayar" di bawah
 
-Terima kasih atas dukungannya! 💝""".replace(',', '.')
+Terima kasih atas dukungannya! 💝"""
 
         try:
             bot.delete_message(chat_id, message_id)
@@ -802,59 +766,36 @@ Terima kasih atas dukungannya! 💝""".replace(',', '.')
         print(f"Create donation error: {e}")
 
 def create_thank_you_image(donor_name, amount, donation_item):
-    """Create thank you image after donation approval"""
     try:
-        # Create thank you image
         width, height = 650, 400
         bg = Image.new('RGB', (width, height), '#f8f9fa')
         draw = ImageDraw.Draw(bg)
 
-        # Load fonts
         try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 32)
-            subtitle_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 24)
-            normal_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 18)
+            title_font = ImageFont.truetype("arial.ttf", 32)
+            subtitle_font = ImageFont.truetype("arial.ttf", 24)
+            normal_font = ImageFont.truetype("arial.ttf", 18)
         except:
             title_font = ImageFont.load_default()
             subtitle_font = ImageFont.load_default()
             normal_font = ImageFont.load_default()
 
-        # Draw gradient background
         for y in range(height):
             r = int(248 + (52 - 248) * y / height)
             g = int(249 + (152 - 249) * y / height)
             b = int(250 + (219 - 250) * y / height)
             draw.line([(0, y), (width, y)], fill=(r, g, b))
 
-        # Thank you title
-        title_text = "🙏 TERIMA KASIH! 🙏"
-        draw.text((width//2, 60), title_text, font=title_font, fill="#2d3436", anchor="mm")
+        draw.text((width//2, 60), "🙏 TERIMA KASIH! 🙏", font=title_font, fill="#2d3436", anchor="mm")
 
-        # Donor info
         donor_display = donor_name if donor_name else "Donatur Anonymous"
-        donor_text = f"Dari: {donor_display}"
-        draw.text((width//2, 120), donor_text, font=subtitle_font, fill="#636e72", anchor="mm")
-
-        # Amount
-        amount_text = f"Nominal: Rp {amount:,}".replace(',', '.')
-        draw.text((width//2, 160), amount_text, font=subtitle_font, fill="#00b894", anchor="mm")
-
-        # Item
-        item_text = f"Item: {donation_item}"
-        draw.text((width//2, 200), item_text, font=normal_font, fill="#74b9ff", anchor="mm")
-
-        # Thank you message
-        thanks_text = "Donasi Anda sangat berarti untuk pengembangan project ini!"
-        draw.text((width//2, 260), thanks_text, font=normal_font, fill="#2d3436", anchor="mm")
-
-        # Signature
-        signature_text = "- aldo soft -"
-        draw.text((width//2, 320), signature_text, font=normal_font, fill="#636e72", anchor="mm")
-
-        # Heart decoration
+        draw.text((width//2, 120), f"Dari: {donor_display}", font=subtitle_font, fill="#636e72", anchor="mm")
+        draw.text((width//2, 160), f"Nominal: {_format_amount(amount)}", font=subtitle_font, fill="#00b894", anchor="mm")
+        draw.text((width//2, 200), f"Item: {donation_item}", font=normal_font, fill="#74b9ff", anchor="mm")
+        draw.text((width//2, 260), "Donasi Anda sangat berarti untuk pengembangan project ini!", font=normal_font, fill="#2d3436", anchor="mm")
+        draw.text((width//2, 320), "- aldo soft -", font=normal_font, fill="#636e72", anchor="mm")
         draw.text((width//2, 360), "💝 💝 💝", font=normal_font, fill="#e17055", anchor="mm")
 
-        # Convert to bytes
         img_bytes = BytesIO()
         bg.save(img_bytes, format='PNG')
         img_bytes.seek(0)
@@ -865,15 +806,16 @@ def create_thank_you_image(donor_name, amount, donation_item):
         return None
 
 def start_bot():
-    """Start the bot"""
+    logger.info("Starting Donation Bot...")
     print("🤖 Starting Donation Bot...")
     init_db()
+    logger.info("Database initialized")
     print("✅ Database initialized")
 
-    # Load existing QRIS if available
     global donation_qris_code
     donation_qris_code = load_donation_qris()
     if donation_qris_code:
+        logger.info("Donation QRIS loaded from database")
         print("✅ Donation QRIS loaded")
 
     try:
@@ -884,15 +826,19 @@ def start_bot():
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            logger.info(f"Bot polling started (attempt {attempt + 1})")
             print(f"🚀 Donation Bot is running... (attempt {attempt + 1})")
             bot.infinity_polling(none_stop=True, timeout=10, long_polling_timeout=5)
             break
         except Exception as e:
+            logger.error(f"Polling error: {e}")
             print(f"❌ Error: {e}")
             if attempt < max_retries - 1:
+                logger.info("Retrying in 3 seconds...")
                 print("🔄 Retrying in 3 seconds...")
                 time.sleep(3)
             else:
+                logger.critical("Bot failed to start after max retries")
                 sys.exit(1)
 
 if __name__ == '__main__':

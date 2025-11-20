@@ -1,12 +1,15 @@
 import sqlite3
 import telebot
 from telebot import types
-from config import *
-from database import *
-from utils import *
+from config import DATABASE_NAME, DONATION_ITEMS
+from database import set_user_state, is_banned, has_pending_donation, load_donation_qris
+from utils import is_admin, generate_random_id, auto_delete_message, get_random_donation_item
+from logger_config import get_logger
+from services import UserService, DonationService
+
+logger = get_logger(__name__)
 
 def welcome_command(bot, message):
-    """Welcome command handler"""
     try:
         user_name = message.from_user.first_name or "Pengguna"
 
@@ -44,7 +47,6 @@ Bot untuk sistem donasi dengan payment QRIS
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 def setup_qris_command(bot, message):
-    """Setup QRIS command handler"""
     try:
         if not is_admin(message.from_user.id):
             bot.reply_to(message, "❌ **HANYA ADMIN YANG DAPAT SETUP QRIS**\n\nCommand `/setupqris` hanya dapat digunakan oleh admin.", parse_mode='Markdown')
@@ -68,7 +70,6 @@ def setup_qris_command(bot, message):
         setup_msg = bot.reply_to(message, setup_text, parse_mode='Markdown')
         set_user_state(message.from_user.id, 'setup_qris', {'message_id': setup_msg.message_id, 'chat_id': message.chat.id})
 
-        # Delete original command
         try:
             bot.delete_message(message.chat.id, message.message_id)
         except:
@@ -78,7 +79,6 @@ def setup_qris_command(bot, message):
         bot.reply_to(message, f"❌ Setup error: {str(e)}")
 
 def start_donation_command(bot, message):
-    """Start donation command"""
     try:
         if is_banned(message.from_user.id):
             bot.reply_to(message, "🚫 **ANDA TELAH DIBLACKLIST**\n\nAnda tidak dapat menggunakan sistem donasi karena telah bermain-main dengan sistem ini.\n\n⚠️ Jangan bermain-main agar tidak di-blacklist!", parse_mode='Markdown')
@@ -100,7 +100,6 @@ def start_donation_command(bot, message):
             bot.reply_to(message, error_text, parse_mode='Markdown')
             return
 
-        # Inline keyboard untuk pilihan donasi
         markup = types.InlineKeyboardMarkup(row_width=2)
 
         amounts = [5000, 10000, 25000, 50000, 100000, 200000]
@@ -109,10 +108,11 @@ def start_donation_command(bot, message):
             for j in range(2):
                 if i + j < len(amounts):
                     amount = amounts[i + j]
-                    btn = types.InlineKeyboardButton(f"💝 Rp {amount:,}".replace(',', '.'), 
+                    btn = types.InlineKeyboardButton(f"💝 {_format_amount(amount)}", 
                                                    callback_data=f"donate_{amount}")
                     row.append(btn)
-            markup.row(*row)
+            if row:
+                markup.row(*row)
 
         btn_custom = types.InlineKeyboardButton("🔢 Custom Amount", callback_data="custom_donate")
         markup.add(btn_custom)
@@ -140,7 +140,6 @@ Terima kasih ingin mendukung karya kami. Setiap donasi Anda sangat berarti untuk
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 def custom_donation_command(bot, message):
-    """Custom donation command handler"""
     try:
         if is_banned(message.from_user.id):
             bot.reply_to(message, "🚫 **ANDA TELAH DIBLACKLIST**\n\nAnda tidak dapat menggunakan sistem donasi.", parse_mode='Markdown')
@@ -173,21 +172,15 @@ def custom_donation_command(bot, message):
             bot.reply_to(message, "❌ Nominal harus berupa angka!\nContoh: `/beri 15000`", parse_mode='Markdown')
             return
 
-        if amount < 1000:
-            bot.reply_to(message, "❌ Minimal donasi Rp 1.000")
-            return
-
-        if amount > 1000000:
-            bot.reply_to(message, "❌ Maksimal donasi Rp 1.000.000")
+        if amount < 1000 or amount > 1000000:
+            bot.reply_to(message, "❌ Minimal donasi Rp 1.000, maksimal Rp 1.000.000")
             return
 
         donor_name = args[2] if len(args) > 2 else ""
         donor_message = " ".join(args[3:]) if len(args) > 3 else ""
 
-        # Create donation directly
-        creating_msg = bot.reply_to(message, f"🔄 **Membuat donasi Rp {amount:,}...**\n\n⏳ Mohon tunggu sebentar...".replace(',', '.'), parse_mode='Markdown')
+        creating_msg = bot.reply_to(message, f"🔄 **Membuat donasi {_format_amount(amount)}...**\n\n⏳ Mohon tunggu sebentar...", parse_mode='Markdown')
 
-        # Import here to avoid circular import
         from main import create_donation_with_details
         create_donation_with_details(
             creating_msg.chat.id,
@@ -198,7 +191,6 @@ def custom_donation_command(bot, message):
             donor_message
         )
 
-        # Delete original command
         try:
             bot.delete_message(message.chat.id, message.message_id)
         except:
@@ -208,75 +200,42 @@ def custom_donation_command(bot, message):
         bot.reply_to(message, f"❌ Error: {str(e)}")
 
 def stats_command(bot, message):
-    """Statistics command handler"""
     try:
         if not is_admin(message.from_user.id):
+            logger.warning(f"Non-admin stats attempt from {message.from_user.id}")
             bot.reply_to(message, "❌ **HANYA ADMIN YANG DAPAT MELIHAT STATISTIK**\n\nCommand `/stats` hanya dapat digunakan oleh admin.", parse_mode='Markdown')
             return
 
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-
-        # Get donation statistics
-        cursor.execute('SELECT status, COUNT(*), SUM(amount) FROM donations GROUP BY status')
-        stats_data = cursor.fetchall()
-
-        cursor.execute('SELECT COUNT(*) FROM donations')
-        total_donations = cursor.fetchone()[0]
-
-        cursor.execute('SELECT SUM(amount) FROM donations WHERE status = "approved"')
-        total_approved_amount = cursor.fetchone()[0] or 0
-
-        cursor.execute('SELECT COUNT(*) FROM banned_users')
-        total_banned = cursor.fetchone()[0]
-
-        cursor.execute('SELECT COUNT(*) FROM custom_donation_items')
-        total_custom_items = cursor.fetchone()[0]
-
-        # Get recent donations
-        cursor.execute('''
-            SELECT random_id, donor_name, amount, status, timestamp 
-            FROM donations 
-            ORDER BY timestamp DESC 
-            LIMIT 5
-        ''')
-        recent_donations = cursor.fetchall()
-
-        conn.close()
+        donation_service = DonationService()
+        user_service = UserService()
+        
+        stats = donation_service.get_donation_stats()
+        recent_donations = donation_service.get_recent_donations(5)
+        total_banned = len(user_service.get_banned_users())
+        total_custom_items = len(user_service.get_custom_items())
+        
+        total_donations = stats['completed']
+        total_approved_amount = stats['total']
 
         stats_text = f"""📊 **STATISTIK DONASI - aldo soft**
 
 📈 **Ringkasan:**
 • 🎯 Total Donasi: {total_donations} transaksi
-• 💰 Total Approved: Rp {total_approved_amount:,}
+• 💰 Total Approved: {_format_amount(total_approved_amount)}
 • 🚫 User Banned: {total_banned} user
 • 🎁 Item Custom: {total_custom_items} item
 
-📋 **Status Donasi:**""".replace(',', '.')
-
-        status_emoji = {
-            'pending': '⏳',
-            'submitted': '📨', 
-            'approved': '✅',
-            'rejected': '❌',
-            'cancelled': '🚫'
-        }
-
-        for status, count, amount in stats_data:
-            emoji = status_emoji.get(status, '📄')
-            amount_display = f"Rp {amount:,}" if amount else "Rp 0"
-            stats_text += f"\n• {emoji} {status.title()}: {count} ({amount_display})"
-
-        stats_text = stats_text.replace(',', '.')
+📋 **Status Donasi:**
+• ✅ Completed: {stats['completed']} ({_format_amount(stats['total'])})
+• ⏳ Pending: {stats['pending']}
+• 👥 Unique Donors: {stats['unique_donors']}"""
 
         if recent_donations:
             stats_text += f"\n\n🕐 **Donasi Terbaru:**"
-            for random_id, donor_name, amount, status, timestamp in recent_donations:
+            for random_id, donor_name, amount, donation_item, timestamp in recent_donations:
                 donor_display = donor_name if donor_name else "Anonim"
-                status_emoji_recent = status_emoji.get(status, '📄')
-                stats_text += f"\n• {random_id} - {donor_display} - Rp {amount:,} {status_emoji_recent}"
+                stats_text += f"\n• {random_id} - {donor_display} - {_format_amount(amount)}"
 
-        stats_text = stats_text.replace(',', '.')
         stats_text += f"\n\n⚡ **Admin Commands:**"
         stats_text += f"\n• `/ban <user_id>` - Ban user"
         stats_text += f"\n• `/unban <user_id>` - Unban user"
@@ -289,6 +248,11 @@ def stats_command(bot, message):
 
         stats_msg = bot.send_message(message.chat.id, stats_text, parse_mode='Markdown')
         auto_delete_message(bot, message.chat.id, stats_msg.message_id, 180)
+        logger.info(f"Stats viewed by admin {message.from_user.id}")
 
     except Exception as e:
+        logger.error(f"Stats command error: {e}")
         bot.reply_to(message, f"❌ Error: {str(e)}")
+
+def _format_amount(amount):
+    return f"Rp {amount:,}".replace(',', '.')

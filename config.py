@@ -1,24 +1,19 @@
-
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Bot Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 1704985763))
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 NOTIFICATION_CHANNEL = os.getenv("NOTIFICATION_CHANNEL", "@beridonasi")
 
-# Database Configuration
 DATABASE_NAME = os.getenv("DATABASE_NAME", "donation_bot.db")
 
-# Auto-delete Configuration
 AUTO_DELETE_DONATION = int(os.getenv("AUTO_DELETE_DONATION", 600))
 AUTO_DELETE_WELCOME = int(os.getenv("AUTO_DELETE_WELCOME", 120))
 AUTO_DELETE_SUCCESS = int(os.getenv("AUTO_DELETE_SUCCESS", 300))
 
-# Donation Items
 DONATION_ITEMS = {
     "makanan": [
         "Pizza", "Burger", "Mie Ayam", "Nasi Goreng", "Seblak",
