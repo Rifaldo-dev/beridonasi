@@ -1,5 +1,4 @@
-from logger_config import get_logger
-from exceptions import BotException, BanException, PendingDonationException, InvalidAmountException, QRISException
+from common import get_logger, BotException, BanException, PendingDonationException, InvalidAmountException, QRISException
 
 logger = get_logger(__name__)
 

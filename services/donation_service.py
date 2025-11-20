@@ -1,7 +1,6 @@
 import sqlite3
 from config import DATABASE_NAME
-from logger_config import get_logger
-from exceptions import InvalidAmountException, DatabaseException
+from common import get_logger, InvalidAmountException, DatabaseException
 
 logger = get_logger(__name__)
 

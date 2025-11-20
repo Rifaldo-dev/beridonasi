@@ -5,9 +5,7 @@ import time
 import qrcode
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
-from database import get_all_donation_items
-from logger_config import get_logger
-from services import QRISService
+from .logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -17,7 +15,11 @@ def generate_random_id():
 
 def get_random_donation_item():
     try:
-        all_items = get_all_donation_items()
+        from repositories import UserRepository
+        from core import SessionLocal
+        db = SessionLocal()
+        all_items = UserRepository.get_all_items_for_random(db)
+        db.close()
         return random.choice(all_items) if all_items else "🎁 Item Donasi"
     except Exception as e:
         logger.error(f"Error getting random item: {e}")
@@ -29,11 +31,25 @@ def is_admin(user_id):
 
 def generate_qris(qris_code, amount):
     try:
+        from services import QRISService
         service = QRISService()
         return service.generate_qris(qris_code, amount)
     except Exception as e:
         logger.error(f"Generate QRIS error: {e}")
         return None
+
+def _format_amount(amount):
+    return f"Rp {amount:,}".replace(',', '.')
+
+def _add_item_emoji(item_name):
+    item_name_lower = item_name.lower()
+    if any(food in item_name_lower for food in ["bakso", "mie", "nasi", "soto", "gado"]):
+        return "🍜"
+    elif any(drink in item_name_lower for drink in ["kopi", "teh", "jus", "air"]):
+        return "☕"
+    elif any(snack in item_name_lower for snack in ["kerupuk", "chips", "kue", "roti"]):
+        return "🍪"
+    return "🎁"
 
 def _load_fonts(sizes):
     fonts = {}

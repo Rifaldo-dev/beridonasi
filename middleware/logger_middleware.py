@@ -1,5 +1,4 @@
-from logger_config import get_logger
-from exceptions import BotException
+from common import get_logger, BotException
 
 logger = get_logger(__name__)
 
